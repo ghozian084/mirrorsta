@@ -472,7 +472,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     if (peer) setTimeout(() => { try { peer.destroy(); } catch (_) {} }, 300);
     $('preview').srcObject = null;
     $('sendLive').hidden = true;
-    $('sendForm').hidden = false;
+    $('sendForm').hidden = !CAN_SHARE;
     updateBtn();
     if (wasActive && text) sendMsg(text, kind || '');
   }
