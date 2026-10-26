@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MirrorSta</title>
+<meta name="description" content="MirrorSta — tampilkan layar komputer ke komputer lain cukup dengan PIN 6 digit.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+:root{
+  --bg:#0e1120;--panel:#171b2e;--panel2:#1e2340;--line:#2b3156;
+  --text:#eef1ff;--muted:#9aa3c7;--accent:#5b8cff;--accent-2:#7cf0c8;
+  --ok:#3ddc97;--warn:#ffc35b;--err:#ff6b6b;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
+  font-family:'Plus Jakarta Sans',system-ui,-apple-system,Segoe UI,sans-serif}
+body{display:flex;flex-direction:column;min-height:100vh;
+  background:radial-gradient(1200px 600px at 80% -10%,#24306a55,transparent 60%),
+             radial-gradient(900px 500px at -10% 110%,#1b4d4a44,transparent 60%),var(--bg)}
+button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:12px 22px;font-weight:600;transition:.15s}
+button:disabled{opacity:.4;cursor:not-allowed}
+.primary{background:var(--accent);color:#fff}
+.primary:not(:disabled):hover{filter:brightness(1.12)}
+.danger{background:var(--err);color:#fff}
+.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.ghost:hover{color:var(--text);border-color:var(--muted)}
+
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:18px 24px;max-width:1100px;width:100%;margin:0 auto}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:22px;letter-spacing:-.02em}
+.logo i{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-style:normal;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#0e1120;font-size:16px}
+.logo span{color:var(--accent-2)}
+.tabs{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:4px}
+.tabs button{background:transparent;color:var(--muted);padding:9px 20px;border-radius:10px}
+.tabs button.on{background:var(--panel2);color:var(--text);box-shadow:0 0 0 1px var(--line) inset}
+
+main{flex:1;display:grid;place-items:center;padding:16px}
+.card{width:100%;max-width:720px;background:var(--panel);border:1px solid var(--line);
+  border-radius:24px;padding:44px 32px;text-align:center;box-shadow:0 30px 80px #0006}
+.label{color:var(--muted);margin:0 0 18px;font-size:17px}
+.pin{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:clamp(56px,13vw,132px);
+  line-height:1;letter-spacing:.06em;margin:6px 0 26px;user-select:all}
+.pin .gap{display:inline-block;width:.35em}
+.status{display:inline-flex;align-items:center;gap:10px;color:var(--muted);font-size:15px;
+  background:var(--panel2);border:1px solid var(--line);padding:8px 16px;border-radius:999px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--warn)}
+.dot.wait{background:var(--warn);animation:pulse 1.4s infinite}
+.dot.ok{background:var(--ok)}
+.dot.err{background:var(--err)}
+@keyframes pulse{50%{opacity:.3}}
+.row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:26px}
+.hint{color:var(--muted);font-size:14px;margin:26px 0 0}
+.hint b{color:var(--text)}
+
+.pinbox{display:flex;gap:10px;justify-content:center;margin:0 0 26px}
+.pinbox input{width:clamp(42px,11vw,72px);height:clamp(56px,14vw,88px);text-align:center;
+  font-family:'JetBrains Mono',ui-monospace,monospace;font-size:clamp(28px,7vw,46px);
+  background:var(--panel2);color:var(--text);border:2px solid var(--line);border-radius:14px;outline:none}
+.pinbox input:focus{border-color:var(--accent)}
+.pinbox .sep{width:8px}
+.msg{min-height:22px;margin:16px 0 0;font-size:15px;color:var(--muted)}
+.msg.err{color:var(--err)}
+.msg.ok{color:var(--ok)}
+#preview{width:100%;max-height:46vh;background:#000;border-radius:14px;border:1px solid var(--line);margin-bottom:20px}
+
+footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22px}
+
+#stage{position:fixed;inset:0;background:#000;z-index:10}
+#stage video{width:100%;height:100%;object-fit:contain;display:block}
+.stagebar{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;
+  background:#0e1120dd;border:1px solid var(--line);padding:8px 8px 8px 16px;border-radius:16px;
+  transition:opacity .3s;backdrop-filter:blur(6px)}
+.stagebar span{color:var(--muted);font-size:14px;margin-right:6px}
+.stagebar button{padding:9px 16px}
+#stage.idle .stagebar{opacity:0}
+#stage.idle{cursor:none}
+
+#toast{position:fixed;left:50%;top:20px;transform:translate(-50%,-140%);background:var(--panel2);
+  border:1px solid var(--line);padding:12px 18px;border-radius:12px;z-index:20;transition:.3s;font-size:15px}
+#toast.show{transform:translate(-50%,0)}
+[hidden]{display:none!important}
+
+@media (max-width:560px){
+  header{padding:14px 16px;flex-direction:column}
+  .card{padding:32px 16px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><i>▶</i>Mirror<span>Sta</span></div>
+  <nav class="tabs">
+    <button id="tabRecv" class="on">Terima</button>
+    <button id="tabSend">Kirim</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ===== MODE TERIMA ===== -->
+  <section id="viewRecv" class="card">
+    <p class="label">Ketik PIN ini di komputer pengirim</p>
+    <div id="pin" class="pin">––– –––</div>
+    <div class="status"><span id="recvDot" class="dot wait"></span><span id="recvStatus">Menyiapkan…</span></div>
+    <div class="row"><button id="btnNewPin" class="ghost">↻ PIN baru</button></div>
+    <p class="hint">Di komputer lain, buka halaman ini → pilih <b>Kirim</b> → ketik PIN.</p>
+  </section>
+
+  <!-- ===== MODE KIRIM ===== -->
+  <section id="viewSend" class="card" hidden>
+    <div id="sendForm">
+      <p class="label">Ketik PIN yang tampil di komputer penerima</p>
+      <div class="pinbox" id="pinbox">
+        <input inputmode="numeric" maxlength="1" aria-label="Digit 1">
+        <input inputmode="numeric" maxlength="1" aria-label="Digit 2">
+        <input inputmode="numeric" maxlength="1" aria-label="Digit 3">
+        <span class="sep"></span>
+        <input inputmode="numeric" maxlength="1" aria-label="Digit 4">
+        <input inputmode="numeric" maxlength="1" aria-label="Digit 5">
+        <input inputmode="numeric" maxlength="1" aria-label="Digit 6">
+      </div>
+      <button id="btnShare" class="primary" disabled>Bagikan Layar</button>
+      <p id="sendMsg" class="msg"></p>
+    </div>
+    <div id="sendLive" hidden>
+      <video id="preview" autoplay muted playsinline></video>
+      <div class="status"><span class="dot ok"></span>Sedang membagikan ke PIN <b id="livePin"></b></div>
+      <div class="row"><button id="btnStop" class="danger">■ Berhenti</button></div>
+    </div>
+  </section>
+</main>
+
+<footer>Gambar layar dikirim langsung lewat WiFi. Internet hanya dipakai saat menyambung.</footer>
+
+<div id="stage" hidden>
+  <video id="remote" autoplay playsinline muted></video>
+  <div class="stagebar">
+    <span>MirrorSta · terhubung</span>
+    <button id="btnFs" class="ghost">⛶ Layar penuh</button>
+    <button id="btnClose" class="danger">Putuskan</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(() => {
+  const PREFIX = 'mirrorsta-v1-';
+  const PEER_OPTS = { debug: 0, config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } };
+  const NET_ERRORS = ['network', 'server-error', 'socket-error', 'socket-closed', 'browser-incompatible'];
+  const $ = id => document.getElementById(id);
+
+  /* ---------- util ---------- */
+  const genPin = () => {
+    const a = new Uint32Array(1); crypto.getRandomValues(a);
+    return String(a[0] % 1e6).padStart(6, '0');
+  };
+  const fmtPin = p => `${p.slice(0, 3)}<span class="gap"></span>${p.slice(3)}`;
+  let toastT;
+  function toast(text) {
+    const t = $('toast'); t.textContent = text; t.classList.add('show');
+    clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 3500);
+  }
+  function watchPc(call, onFail) {
+    const pc = call.peerConnection; if (!pc) return;
+    let t;
+    pc.addEventListener('connectionstatechange', () => {
+      const s = pc.connectionState;
+      clearTimeout(t);
+      if (s === 'failed' || s === 'closed') onFail();
+      else if (s === 'disconnected') t = setTimeout(() => { if (pc.connectionState !== 'connected') onFail(); }, 6000);
+    });
+  }
+
+  /* ---------- mode ---------- */
+  let mode = null;
+  function setMode(m) {
+    if (m === mode) return;
+    mode = m;
+    $('tabRecv').classList.toggle('on', m === 'recv');
+    $('tabSend').classList.toggle('on', m === 'send');
+    $('viewRecv').hidden = m !== 'recv';
+    $('viewSend').hidden = m !== 'send';
+    if (m === 'recv') { stopSharing(); startRecv(); }
+    else { stopRecv(); pinInputs[0].focus(); }
+  }
+  $('tabRecv').onclick = () => setMode('recv');
+  $('tabSend').onclick = () => setMode('send');
+
+  /* =====================================================
+     MODE TERIMA
+     ===================================================== */
+  let rPeer = null, rConn = null, rCall = null, rRetry = null, wakeLock = null;
+
+  function setRecvStatus(text, kind) {
+    $('recvStatus').textContent = text;
+    $('recvDot').className = 'dot ' + kind;
+  }
+
+  function stopRecv() {
+    clearTimeout(rRetry);
+    const p = rPeer;
+    rPeer = rConn = rCall = null;
+    hideStage();
+    if (p) try { p.destroy(); } catch (_) {}
+  }
+
+  function startRecv() {
+    stopRecv();
+    const pin = genPin();
+    $('pin').textContent = '––– –––';
+    setRecvStatus('Menyiapkan…', 'wait');
+    const peer = rPeer = new Peer(PREFIX + pin, PEER_OPTS);
+
+    peer.on('open', () => {
+      if (peer !== rPeer) return;
+      $('pin').innerHTML = fmtPin(pin);
+      setRecvStatus('Menunggu pengirim…', 'wait');
+    });
+
+    peer.on('connection', conn => {
+      if (peer !== rPeer) return;
+      if (rConn) { // sudah ada pengirim → tolak
+        conn.on('open', () => { conn.send({ t: 'busy' }); setTimeout(() => conn.close(), 600); });
+        return;
+      }
+      rConn = conn;
+      conn.on('open', () => { conn.send({ t: 'ok' }); setRecvStatus('Pengirim terhubung, menunggu layar…', 'wait'); });
+      conn.on('data', d => { if (d && d.t === 'stop' && rConn === conn) endSession('Pengirim berhenti berbagi.'); });
+      conn.on('close', () => { if (rConn === conn) endSession('Koneksi terputus.'); });
+      conn.on('error', () => {});
+    });
+
+    peer.on('call', call => {
+      if (peer !== rPeer || !rConn || call.peer !== rConn.peer || rCall) { call.close(); return; }
+      rCall = call;
+      call.answer();
+      call.on('stream', showStream);
+      call.on('close', () => { if (rCall === call) endSession('Koneksi terputus.'); });
+      watchPc(call, () => { if (rCall === call) endSession('Koneksi terputus.'); });
+    });
+
+    peer.on('disconnected', () => {
+      if (peer === rPeer && !peer.destroyed) try { peer.reconnect(); } catch (_) {}
+    });
+
+    peer.on('error', e => {
+      if (peer !== rPeer) return;
+      if (e.type === 'unavailable-id') { startRecv(); return; } // PIN bentrok → buat baru
+      if (NET_ERRORS.includes(e.type)) {
+        if (rCall) return; // streaming tetap jalan lewat WiFi
+        setRecvStatus('Tidak bisa terhubung ke server. Cek internet, mencoba lagi…', 'err');
+        clearTimeout(rRetry); rRetry = setTimeout(startRecv, 4000);
+      }
+    });
+  }
+
+  function endSession(text) {
+    if (!rPeer) return;
+    startRecv(); // PIN baru otomatis
+    if (text) toast(text);
+  }
+
+  function showStream(stream) {
+    const v = $('remote');
+    v.srcObject = stream;
+    $('stage').hidden = false;
+    v.play().catch(() => {});
+    setRecvStatus('Terhubung', 'ok');
+    requestWake();
+    poke();
+  }
+
+  function hideStage() {
+    $('remote').srcObject = null;
+    $('stage').hidden = true;
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    releaseWake();
+  }
+
+  /* layar tetap menyala */
+  async function requestWake() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
+  }
+  function releaseWake() { try { wakeLock && wakeLock.release(); } catch (_) {} wakeLock = null; }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !$('stage').hidden) requestWake();
+  });
+
+  /* kontrol panggung */
+  function toggleFs() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else $('stage').requestFullscreen().catch(() => {});
+  }
+  $('btnFs').onclick = toggleFs;
+  $('remote').ondblclick = toggleFs;
+  document.addEventListener('fullscreenchange', () => {
+    $('btnFs').textContent = document.fullscreenElement ? '⛶ Keluar layar penuh' : '⛶ Layar penuh';
+  });
+  $('btnClose').onclick = () => {
+    try { rConn && rConn.open && rConn.send({ t: 'stop' }); } catch (_) {}
+    setTimeout(() => endSession('Koneksi diputus.'), 250);
+  };
+  $('btnNewPin').onclick = startRecv;
+
+  let idleT;
+  function poke() {
+    $('stage').classList.remove('idle');
+    clearTimeout(idleT); idleT = setTimeout(() => $('stage').classList.add('idle'), 2500);
+  }
+  $('stage').addEventListener('mousemove', poke);
+
+  /* =====================================================
+     MODE KIRIM
+     ===================================================== */
+  const pinInputs = [...document.querySelectorAll('#pinbox input')];
+  const readPin = () => pinInputs.map(i => i.value).join('');
+  const updateBtn = () => { $('btnShare').disabled = !/^\d{6}$/.test(readPin()) || sending; };
+
+  function fillPin(digits, start = 0) {
+    digits = digits.replace(/\D/g, '');
+    for (let k = 0; k < digits.length && start + k < 6; k++) pinInputs[start + k].value = digits[k];
+    pinInputs[Math.min(start + digits.length, 5)].focus();
+    updateBtn();
+  }
+
+  pinInputs.forEach((inp, i) => {
+    inp.addEventListener('input', () => {
+      const v = inp.value.replace(/\D/g, '');
+      inp.value = '';
+      if (v) fillPin(v, i); else updateBtn();
+    });
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Backspace' && !inp.value && i > 0) { pinInputs[i - 1].value = ''; pinInputs[i - 1].focus(); updateBtn(); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft' && i > 0) pinInputs[i - 1].focus();
+      else if (e.key === 'ArrowRight' && i < 5) pinInputs[i + 1].focus();
+      else if (e.key === 'Enter' && !$('btnShare').disabled) share();
+    });
+    inp.addEventListener('paste', e => {
+      e.preventDefault();
+      fillPin((e.clipboardData || window.clipboardData).getData('text'), i);
+    });
+    inp.addEventListener('focus', () => inp.select());
+  });
+
+  let sPeer = null, sConn = null, sCall = null, sStream = null, sTimeout = null, sending = false;
+
+  function sendMsg(text, kind = '') { const m = $('sendMsg'); m.textContent = text; m.className = 'msg ' + kind; }
+
+  async function share() {
+    const pin = readPin();
+    if (!/^\d{6}$/.test(pin) || sending) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      sendMsg('Perangkat/browser ini tidak bisa berbagi layar. Gunakan Chrome atau Edge di komputer.', 'err');
+      return;
+    }
+    sending = true; updateBtn();
+    sendMsg('Pilih layar, jendela, atau tab yang akan dibagikan…');
+
+    try {
+      sStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 30, max: 30 } }, audio: false
+      });
+    } catch (e) {
+      sending = false; updateBtn();
+      sendMsg(e.name === 'NotAllowedError' ? 'Izin berbagi layar ditolak.' : 'Gagal mengambil layar: ' + e.message, 'err');
+      return;
+    }
+
+    const track = sStream.getVideoTracks()[0];
+    try { track.contentHint = 'detail'; } catch (_) {} // tajam untuk teks & rumus
+    track.addEventListener('ended', () => stopSharing('Berbagi layar dihentikan.'));
+
+    sendMsg('Menghubungkan ke penerima…');
+    const peer = sPeer = new Peer(PEER_OPTS);
+    sTimeout = setTimeout(() => stopSharing('Penerima tidak merespons. Periksa PIN dan pastikan satu WiFi.', 'err'), 20000);
+
+    peer.on('open', () => {
+      if (peer !== sPeer) return;
+      const conn = sConn = peer.connect(PREFIX + pin, { reliable: true });
+      conn.on('data', d => {
+        if (!d || peer !== sPeer) return;
+        if (d.t === 'busy') stopSharing('Penerima sedang dipakai perangkat lain.', 'err');
+        else if (d.t === 'stop') stopSharing('Penerima memutus koneksi.');
+        else if (d.t === 'ok' && !sCall) {
+          clearTimeout(sTimeout);
+          const call = sCall = peer.call(PREFIX + pin, sStream);
+          if (!call) { stopSharing('Gagal memulai panggilan.', 'err'); return; }
+          call.on('close', () => { if (sCall === call) stopSharing('Koneksi ke penerima terputus.', 'err'); });
+          watchPc(call, () => { if (sCall === call) stopSharing('Koneksi ke penerima terputus.', 'err'); });
+          boostQuality(call);
+          goLive(pin);
+        }
+      });
+      conn.on('close', () => { if (sConn === conn) stopSharing('Koneksi ke penerima terputus.', 'err'); });
+      conn.on('error', () => {});
+    });
+
+    peer.on('error', e => {
+      if (peer !== sPeer) return;
+      if (e.type === 'peer-unavailable') stopSharing('PIN tidak ditemukan. Periksa kembali angkanya.', 'err');
+      else if (NET_ERRORS.includes(e.type)) { if (!sCall) stopSharing('Tidak bisa terhubung ke server. Cek internet.', 'err'); }
+      else stopSharing('Terjadi kesalahan (' + e.type + ').', 'err');
+    });
+  }
+
+  function boostQuality(call) {
+    const pc = call.peerConnection; if (!pc) return;
+    const apply = async () => {
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (!sender) return;
+      try {
+        const p = sender.getParameters();
+        if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+        p.encodings[0].maxBitrate = 8_000_000; // WiFi lokal → bitrate tinggi
+        p.degradationPreference = 'maintain-resolution';
+        await sender.setParameters(p);
+      } catch (_) {}
+    };
+    pc.addEventListener('connectionstatechange', () => { if (pc.connectionState === 'connected') apply(); });
+  }
+
+  function goLive(pin) {
+    $('sendForm').hidden = true;
+    $('sendLive').hidden = false;
+    $('livePin').textContent = pin.slice(0, 3) + ' ' + pin.slice(3);
+    $('preview').srcObject = sStream;
+  }
+
+  function stopSharing(text, kind) {
+    const wasActive = sending || sPeer;
+    clearTimeout(sTimeout);
+    const peer = sPeer, conn = sConn, call = sCall, stream = sStream;
+    sPeer = sConn = sCall = sStream = null;
+    sending = false;
+    try { conn && conn.open && conn.send({ t: 'stop' }); } catch (_) {}
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    try { call && call.close(); } catch (_) {}
+    if (peer) setTimeout(() => { try { peer.destroy(); } catch (_) {} }, 300);
+    $('preview').srcObject = null;
+    $('sendLive').hidden = true;
+    $('sendForm').hidden = false;
+    updateBtn();
+    if (wasActive && text) sendMsg(text, kind || '');
+  }
+
+  $('btnShare').onclick = share;
+  $('btnStop').onclick = () => stopSharing('Berbagi layar dihentikan.', 'ok');
+
+  window.addEventListener('beforeunload', () => { stopSharing(); stopRecv(); });
+
+  /* ---------- mulai ----------
+     #kirim            → buka mode Kirim
+     #kirim=123456     → mode Kirim + PIN terisi            */
+  const h = location.hash.match(/^#kirim(?:=(\d{6}))?/i);
+  if (typeof Peer === 'undefined') {
+    document.querySelector('main').innerHTML =
+      '<div class="card"><p class="label">Gagal memuat komponen koneksi. Periksa internet lalu muat ulang halaman.</p></div>';
+    return;
+  }
+  if (h) { setMode('send'); if (h[1]) fillPin(h[1]); }
+  else setMode('recv');
+})();
+</script>
+</body>
+</html>
