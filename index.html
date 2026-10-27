@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <style>
 :root{
   --bg:#0e1120;--panel:#171b2e;--panel2:#1e2340;--line:#2b3156;
@@ -39,8 +40,8 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;
 .tabs button{background:transparent;color:var(--muted);padding:9px 20px;border-radius:10px}
 .tabs button.on{background:var(--panel2);color:var(--text);box-shadow:0 0 0 1px var(--line) inset}
 
-main{flex:1;display:grid;place-items:center;padding:16px}
-.card{width:100%;max-width:720px;background:var(--panel);border:1px solid var(--line);
+main{flex:1;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:20px;padding:16px}
+.card{flex:1 1 520px;max-width:720px;background:var(--panel);border:1px solid var(--line);
   border-radius:24px;padding:44px 32px;text-align:center;box-shadow:0 30px 80px #0006}
 .label{color:var(--muted);margin:0 0 18px;font-size:17px}
 .pin{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:clamp(56px,13vw,132px);
@@ -66,6 +67,28 @@ main{flex:1;display:grid;place-items:center;padding:16px}
 .msg{min-height:22px;margin:16px 0 0;font-size:15px;color:var(--muted)}
 .msg.err{color:var(--err)}
 .msg.ok{color:var(--ok)}
+.devices{flex:1 1 260px;max-width:320px;align-self:stretch;display:flex;flex-direction:column;gap:12px;
+  background:var(--panel);border:1px solid var(--line);border-radius:24px;padding:20px;box-shadow:0 30px 80px #0006}
+.dev-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.dev-head h2{margin:0;font-size:17px}
+.badge{min-width:26px;text-align:center;background:var(--panel2);border:1px solid var(--line);
+  border-radius:999px;padding:2px 9px;font-size:13px;color:var(--muted)}
+.badge.on{color:#0e1120;background:var(--ok);border-color:var(--ok)}
+.dev-sub{margin:0;color:var(--muted);font-size:13px;line-height:1.45}
+.dev-sub.err{color:var(--err)}
+#devList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;overflow:auto;flex:1;min-height:60px}
+#devList li{display:flex;align-items:center;gap:10px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:14px;padding:10px 12px}
+#devList li.empty{display:block;background:none;border-style:dashed;color:var(--muted);font-size:13px;text-align:center;line-height:1.45}
+.dev-ic{font-size:20px;flex:none}
+.dev-info{flex:1;min-width:0}
+.dev-info b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dev-info small{color:var(--muted);font-size:12px}
+.dev-info small.live{color:var(--ok)}
+#devList button{padding:7px 12px;font-size:13px;border-radius:10px;flex:none}
+.dev-me{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:12px}
+.link{background:none;padding:0;border-radius:0;color:var(--text);font-weight:600;text-decoration:underline dotted}
+@media (max-width:880px){.devices{max-width:720px;align-self:auto}}
 #preview{width:100%;max-height:46vh;background:#000;border-radius:14px;border:1px solid var(--line);margin-bottom:20px}
 
 footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22px}
@@ -141,6 +164,14 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
       <div class="row"><button id="btnStop" class="danger">■ Berhenti</button></div>
     </div>
   </section>
+
+  <!-- ===== PERANGKAT ONLINE ===== -->
+  <aside class="devices" aria-label="Perangkat online">
+    <div class="dev-head"><h2>Perangkat online</h2><span id="devCount" class="badge">0</span></div>
+    <p id="devStatus" class="dev-sub">Mencari perangkat di jaringan yang sama…</p>
+    <ul id="devList"></ul>
+    <div class="dev-me">Perangkat ini: <button id="devName" class="link" title="Ganti nama"></button></div>
+  </aside>
 </main>
 
 <footer>Gambar layar dikirim langsung lewat WiFi. Internet hanya dipakai saat menyambung.</footer>
@@ -198,6 +229,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     $('viewSend').hidden = m !== 'send';
     if (m === 'recv') { stopSharing(); startRecv(); }
     else { stopRecv(); if (CAN_SHARE) pinInputs[0].focus(); }
+    announce();
   }
   $('tabRecv').onclick = () => setMode('recv');
   $('btnToRecv').onclick = () => setMode('recv');
@@ -206,17 +238,18 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
   /* =====================================================
      MODE TERIMA
      ===================================================== */
-  let rPeer = null, rConn = null, rCall = null, rRetry = null, wakeLock = null;
+  let rPeer = null, rConn = null, rCall = null, rRetry = null, rPin = null, wakeLock = null;
 
   function setRecvStatus(text, kind) {
     $('recvStatus').textContent = text;
     $('recvDot').className = 'dot ' + kind;
+    announce();
   }
 
   function stopRecv() {
     clearTimeout(rRetry);
     const p = rPeer;
-    rPeer = rConn = rCall = null;
+    rPeer = rConn = rCall = rPin = null;
     hideStage();
     if (p) try { p.destroy(); } catch (_) {}
   }
@@ -231,6 +264,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     peer.on('open', () => {
       if (peer !== rPeer) return;
       $('pin').innerHTML = fmtPin(pin);
+      rPin = pin;
       setRecvStatus('Menunggu pengirim…', 'wait');
     });
 
@@ -487,6 +521,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     $('sendLive').hidden = false;
     $('livePin').textContent = pin.slice(0, 3) + ' ' + pin.slice(3);
     $('preview').srcObject = sStream;
+    announce();
   }
 
   function stopSharing(text, kind) {
@@ -504,12 +539,187 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     $('sendForm').hidden = !CAN_SHARE;
     updateBtn();
     if (wasActive && text) sendMsg(text, kind || '');
+    announce();
   }
 
   $('btnShare').onclick = share;
   $('btnStop').onclick = () => stopSharing('Berbagi layar dihentikan.', 'ok');
 
-  window.addEventListener('beforeunload', () => { stopSharing(); stopRecv(); });
+  /* =====================================================
+     PERANGKAT ONLINE
+     Browser tidak bisa memindai WiFi, jadi setiap halaman melapor ke broker MQTT publik.
+     Perangkat dengan IP publik yang sama (mis. satu WiFi sekolah) masuk ke "ruang" yang sama.
+     Topik & isi pesan diturunkan dari IP itu (SHA-256 + AES-GCM), jadi hanya perangkat
+     di jaringan tersebut yang bisa membaca daftar dan PIN-nya.
+     ===================================================== */
+  const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+  const SALT = 'mirrorsta-v1';
+  const HEARTBEAT = 10000, EXPIRE = 25000;
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  const b64 = u8 => btoa(String.fromCharCode(...u8));
+  const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const hex = u8 => [...u8].map(b => b.toString(16).padStart(2, '0')).join('');
+  const digest = async s => new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)));
+  const randHex = n => hex(crypto.getRandomValues(new Uint8Array(n)));
+
+  function detectDevice() {
+    const ua = navigator.userAgent;
+    const iPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+    const os = /iPhone/.test(ua) ? 'iPhone' : iPad ? 'iPad' : /Android/.test(ua) ? (/Mobile/.test(ua) ? 'HP Android' : 'Tablet Android')
+      : /Windows/.test(ua) ? 'Windows' : /CrOS/.test(ua) ? 'Chromebook' : /Macintosh/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Perangkat';
+    const br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\/|CriOS/.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : '';
+    return { name: br ? `${os} · ${br}` : os, kind: /iPhone|HP Android/.test(os) ? 'phone' : /iPad|Tablet/.test(os) ? 'tablet' : 'pc' };
+  }
+  const dev = detectDevice();
+  const ME = { id: randHex(8), name: dev.name, kind: dev.kind };
+  try { ME.name = localStorage.getItem('mirrorsta-name') || ME.name; } catch (_) {}
+
+  const P = { client: null, topic: null, key: null, peers: new Map(), annT: null };
+
+  function myState() {
+    if (mode === 'recv') return rCall || rConn ? { state: 'busy' } : rPin ? { state: 'recv', pin: rPin } : { state: 'idle' };
+    return sCall ? { state: 'send' } : { state: CAN_SHARE ? 'ready' : 'idle' };
+  }
+
+  async function seal(obj) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, P.key, enc.encode(JSON.stringify(obj))));
+    return b64(iv) + '.' + b64(ct);
+  }
+  async function unseal(text) {
+    try {
+      const [iv, ct] = text.split('.');
+      return JSON.parse(dec.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, P.key, unb64(ct))));
+    } catch (_) { return null; }
+  }
+  async function publish(obj) {
+    const c = P.client;
+    if (c && c.connected) c.publish(P.topic, await seal(obj));
+  }
+
+  function announce() { // dipanggil di setiap perubahan status; digabung supaya tidak membanjiri broker
+    renderDevices();
+    clearTimeout(P.annT);
+    P.annT = setTimeout(() => publish({ t: 'hi', id: ME.id, name: ME.name, kind: ME.kind, ...myState() }), 150);
+  }
+
+  function onPresence(m) {
+    if (!m || typeof m.id !== 'string' || m.id === ME.id) return;
+    if (m.t === 'who') announce();
+    else if (m.t === 'bye') { P.peers.delete(m.id); renderDevices(); }
+    else if (m.t === 'hi') {
+      P.peers.set(m.id, {
+        id: m.id,
+        name: String(m.name || 'Perangkat').slice(0, 40),
+        kind: ['pc', 'phone', 'tablet'].includes(m.kind) ? m.kind : 'pc',
+        state: ['recv', 'busy', 'send', 'ready', 'idle'].includes(m.state) ? m.state : 'idle',
+        pin: /^\d{6}$/.test(m.pin) ? m.pin : null,
+        seen: Date.now(),
+      });
+      renderDevices();
+    }
+  }
+
+  function setDevStatus(text, kind = '') {
+    const s = $('devStatus'); s.textContent = text; s.className = 'dev-sub ' + kind;
+  }
+
+  const STATE_TEXT = { recv: 'Siap menerima', busy: 'Sedang menampilkan layar', send: 'Sedang mengirim layar', ready: 'Mode Kirim', idle: 'Online' };
+  const ICON = { pc: '💻', phone: '📱', tablet: '📱' };
+
+  function renderDevices() {
+    $('devName').textContent = ME.name;
+    const list = [...P.peers.values()].sort((a, b) => a.name.localeCompare(b.name));
+    $('devCount').textContent = list.length;
+    $('devCount').classList.toggle('on', list.length > 0);
+    const ul = $('devList'); ul.replaceChildren();
+    if (!list.length) {
+      const li = document.createElement('li'); li.className = 'empty';
+      li.textContent = 'Belum ada perangkat lain. Buka MirrorSta di perangkat lain yang memakai WiFi yang sama.';
+      ul.append(li); return;
+    }
+    for (const d of list) {
+      const li = document.createElement('li');
+      const ic = document.createElement('span'); ic.className = 'dev-ic'; ic.textContent = ICON[d.kind];
+      const info = document.createElement('div'); info.className = 'dev-info';
+      const b = document.createElement('b'); b.textContent = b.title = d.name;
+      const sm = document.createElement('small');
+      sm.textContent = d.state === 'recv' && d.pin ? `${STATE_TEXT.recv} · PIN ${d.pin.slice(0, 3)} ${d.pin.slice(3)}` : STATE_TEXT[d.state];
+      if (d.state === 'busy' || d.state === 'send') sm.className = 'live';
+      info.append(b, sm);
+      li.append(ic, info);
+      if (d.state === 'recv' && d.pin && CAN_SHARE && !sending && !sCall) {
+        const btn = document.createElement('button'); btn.className = 'primary'; btn.textContent = 'Kirim ke sini';
+        btn.onclick = () => sendTo(d.pin);
+        li.append(btn);
+      }
+      ul.append(li);
+    }
+  }
+
+  function sendTo(pin) {
+    setMode('send');
+    pinInputs.forEach(i => { i.value = ''; });
+    fillPin(pin);
+    share(); // klik ini adalah gestur pengguna, jadi getDisplayMedia diizinkan
+  }
+
+  $('devName').onclick = () => {
+    const n = prompt('Nama perangkat ini (mis. IFP Kelas 7A):', ME.name);
+    if (!n || !n.trim()) return;
+    ME.name = n.trim().slice(0, 30);
+    try { localStorage.setItem('mirrorsta-name', ME.name); } catch (_) {}
+    announce();
+  };
+
+  async function publicIp() {
+    try {
+      const j = await (await fetch('https://api.ipify.org?format=json', { cache: 'no-store' })).json();
+      if (j && j.ip) return j.ip;
+    } catch (_) {}
+    try {
+      const t = await (await fetch('https://www.cloudflare.com/cdn-cgi/trace', { cache: 'no-store' })).text();
+      return (t.match(/^ip=(.+)$/m) || [])[1] || null;
+    } catch (_) { return null; }
+  }
+
+  async function startPresence() {
+    renderDevices();
+    if (typeof mqtt === 'undefined' || !window.crypto || !crypto.subtle) {
+      setDevStatus('Deteksi perangkat tidak tersedia di browser ini.', 'err'); return;
+    }
+    const ip = await publicIp();
+    if (!ip) { setDevStatus('Tidak bisa mendeteksi jaringan. Cek internet.', 'err'); return; }
+    P.topic = 'mirrorsta/v1/' + hex(await digest(SALT + '|room|' + ip)).slice(0, 32);
+    P.key = await crypto.subtle.importKey('raw', await digest(SALT + '|key|' + ip), 'AES-GCM', false, ['encrypt', 'decrypt']);
+
+    const c = P.client = mqtt.connect(BROKER, {
+      clientId: 'mirrorsta-' + ME.id + '-' + randHex(3),
+      keepalive: 30, reconnectPeriod: 5000, connectTimeout: 10000,
+      will: { topic: P.topic, payload: await seal({ t: 'bye', id: ME.id }), qos: 0, retain: false },
+    });
+    c.on('connect', () => {
+      c.subscribe(P.topic);
+      publish({ t: 'who', id: ME.id });
+      announce();
+      setDevStatus('Perangkat yang membuka MirrorSta di jaringan internet yang sama (mis. WiFi sekolah).');
+    });
+    c.on('message', async (_t, payload) => onPresence(await unseal(payload.toString())));
+    c.on('offline', () => setDevStatus('Layanan deteksi terputus, mencoba lagi…', 'err'));
+    c.on('error', () => {});
+
+    setInterval(() => {
+      const now = Date.now();
+      for (const [id, d] of P.peers) if (now - d.seen > EXPIRE) P.peers.delete(id);
+      announce();
+    }, HEARTBEAT);
+  }
+
+  window.addEventListener('beforeunload', () => {
+    stopSharing(); stopRecv();
+    const c = P.client;
+    if (c && c.connected) seal({ t: 'bye', id: ME.id }).then(m => { c.publish(P.topic, m); c.end(); }).catch(() => {});
+  });
 
   /* ---------- mulai ----------
      #kirim            → buka mode Kirim
@@ -523,6 +733,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
   if (!CAN_SHARE) { $('sendForm').hidden = true; $('sendNoSupport').hidden = false; }
   if (h) { setMode('send'); if (h[1] && CAN_SHARE) fillPin(h[1]); }
   else setMode('recv');
+  startPresence();
 })();
 </script>
 </body>
