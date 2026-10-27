@@ -406,11 +406,25 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
 
     sendMsg('Menghubungkan ke penerima…');
     const peer = sPeer = new Peer(PEER_OPTS);
-    sTimeout = setTimeout(() => stopSharing('Penerima tidak merespons. Periksa PIN dan pastikan satu WiFi.', 'err'), 20000);
+    let failing = false;
+    const failNoRoute = async () => {
+      if (failing || peer !== sPeer || sCall) return;
+      failing = true; clearTimeout(sTimeout);
+      const conn = sConn;
+      const text = conn
+        ? 'Penerima tidak bisa dijangkau — kemungkinan jaringan memblokir koneksi langsung. ' + await iceDetail(conn.peerConnection)
+        : 'Tidak bisa terhubung ke server. Cek internet.';
+      if (peer === sPeer) stopSharing(text, 'err');
+    };
+    sTimeout = setTimeout(failNoRoute, 20000);
 
     peer.on('open', () => {
       if (peer !== sPeer) return;
       const conn = sConn = peer.connect(PREFIX + pin, { reliable: true });
+      const pc = conn.peerConnection;
+      if (pc) pc.addEventListener('iceconnectionstatechange', () => {
+        if (pc.iceConnectionState === 'failed' && sConn === conn) failNoRoute();
+      });
       conn.on('data', d => {
         if (!d || peer !== sPeer) return;
         if (d.t === 'busy') stopSharing('Penerima sedang dipakai perangkat lain.', 'err');
@@ -435,6 +449,21 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
       else if (NET_ERRORS.includes(e.type)) { if (!sCall) stopSharing('Tidak bisa terhubung ke server. Cek internet.', 'err'); }
       else stopSharing('Terjadi kesalahan (' + e.type + ').', 'err');
     });
+  }
+
+  /* ringkasan teknis untuk diagnosis: status ICE + jenis kandidat (host = jaringan lokal,
+     srflx = alamat publik lewat STUN, relay = TURN) di sisi pengirim dan penerima */
+  async function iceDetail(pc) {
+    if (!pc) return '';
+    const loc = new Set(), rem = new Set();
+    try {
+      (await pc.getStats()).forEach(s => {
+        if (s.type === 'local-candidate') loc.add(s.candidateType);
+        else if (s.type === 'remote-candidate') rem.add(s.candidateType);
+      });
+    } catch (_) {}
+    const list = s => [...s].join('+') || '–';
+    return `[ICE ${pc.iceConnectionState} · pengirim: ${list(loc)} · penerima: ${list(rem)}]`;
   }
 
   function boostQuality(call) {
