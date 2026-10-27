@@ -85,6 +85,7 @@ main{flex:1;display:flex;flex-wrap:wrap;align-items:center;justify-content:cente
 .dev-info b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dev-info small{color:var(--muted);font-size:12px}
 .dev-info small.live{color:var(--ok)}
+.dev-acts{display:flex;flex-direction:column;gap:6px;flex:none}
 #devList button{padding:7px 12px;font-size:13px;border-radius:10px;flex:none}
 .dev-me{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:12px}
 .link{background:none;padding:0;border-radius:0;color:var(--text);font-weight:600;text-decoration:underline dotted}
@@ -103,6 +104,11 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
 #stage.idle .stagebar{opacity:0;pointer-events:none}
 #stage.idle{cursor:none}
 
+.modal{position:fixed;inset:0;z-index:15;display:grid;place-items:center;padding:16px;background:#0009;backdrop-filter:blur(4px)}
+.modal-card{width:100%;max-width:440px;background:var(--panel);border:1px solid var(--line);border-radius:20px;
+  padding:28px 22px;text-align:center;box-shadow:0 30px 80px #000a}
+.modal-card .label b{color:var(--text)}
+.modal-card .row{margin-top:18px}
 #toast{position:fixed;left:50%;top:20px;transform:translate(-50%,-140%);background:var(--panel2);
   border:1px solid var(--line);padding:12px 18px;border-radius:12px;z-index:20;transition:.3s;font-size:15px}
 #toast.show{transform:translate(-50%,0)}
@@ -132,7 +138,10 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     <p class="label">Ketik PIN ini di komputer pengirim</p>
     <div id="pin" class="pin">––– –––</div>
     <div class="status"><span id="recvDot" class="dot wait"></span><span id="recvStatus">Menyiapkan…</span></div>
-    <div class="row"><button id="btnNewPin" class="ghost">↻ PIN baru</button></div>
+    <div class="row">
+      <button id="btnNewPin" class="ghost">↻ PIN baru</button>
+      <button id="btnLocalNet" class="ghost" title="Izinkan mikrofon agar IP lokal asli dipakai (suara tidak direkam)">🔓 Buka jaringan lokal</button>
+    </div>
     <p class="hint">Di komputer lain, buka halaman ini → pilih <b>Kirim</b> → ketik PIN.</p>
   </section>
 
@@ -185,6 +194,16 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
   </div>
 </div>
 
+<div id="reqBox" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="reqTitle">
+  <div class="modal-card">
+    <p id="reqTitle" class="label"><b id="reqName"></b> meminta Anda membagikan layar ke sana.</p>
+    <div class="row">
+      <button id="reqOk" class="primary">Bagikan layar</button>
+      <button id="reqNo" class="ghost">Tolak</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -207,6 +226,23 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     const t = $('toast'); t.textContent = text; t.classList.add('show');
     clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 3500);
   }
+  /* Chrome/Safari menyamarkan IP lokal sebagai "xxxx.local" (mDNS) kecuali situs punya izin mikrofon/kamera.
+     Di jaringan sekolah & hotspot, nama .local sering tidak bisa ditemukan perangkat lain sehingga koneksi
+     langsung gagal. Izin mikrofon membuat IP lokal asli dipakai. Mikrofon tidak direkam dan tidak dikirim;
+     keep=true menahan stream sampai koneksi terbentuk (Firefox/Safari hanya membuka IP selama mic aktif). */
+  async function unlockLocalIp(keep) {
+    try {
+      const s = await navigator.permissions.query({ name: 'microphone' });
+      if (s.state === 'denied') return null;
+    } catch (_) {}
+    try {
+      const m = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (keep) { m.getTracks().forEach(t => { t.enabled = false; }); return m; }
+      m.getTracks().forEach(t => t.stop());
+      return true;
+    } catch (_) { return null; }
+  }
+
   function watchPc(call, onFail) {
     const pc = call.peerConnection; if (!pc) return;
     let t;
@@ -368,6 +404,14 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     setTimeout(() => endSession('Koneksi diputus.'), 250);
   };
   $('btnNewPin').onclick = startRecv;
+  $('btnLocalNet').onclick = async () => {
+    const ok = await unlockLocalIp(false);
+    toast(ok ? 'Jaringan lokal dibuka. Silakan kirim layar lagi.' : 'Izin mikrofon ditolak atau tidak ada mikrofon.');
+    if (ok) $('btnLocalNet').hidden = true;
+  };
+  try {
+    navigator.permissions.query({ name: 'microphone' }).then(s => { if (s.state === 'granted') $('btnLocalNet').hidden = true; }, () => {});
+  } catch (_) {}
 
   let idleT;
   function poke() {
@@ -410,7 +454,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     inp.addEventListener('focus', () => inp.select());
   });
 
-  let sPeer = null, sConn = null, sCall = null, sStream = null, sTimeout = null, sending = false;
+  let sPeer = null, sConn = null, sCall = null, sStream = null, sMic = null, sTimeout = null, sending = false;
 
   function sendMsg(text, kind = '') { const m = $('sendMsg'); m.textContent = text; m.className = 'msg ' + kind; }
 
@@ -437,6 +481,11 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     const track = sStream.getVideoTracks()[0];
     try { track.contentHint = 'detail'; } catch (_) {} // tajam untuk teks & rumus
     track.addEventListener('ended', () => stopSharing('Berbagi layar dihentikan.'));
+
+    sendMsg('Izinkan mikrofon jika diminta — hanya untuk membuka jalur jaringan lokal, suara tidak direkam.');
+    const mic = await unlockLocalIp(true);
+    if (!sStream) { if (mic) mic.getTracks().forEach(t => t.stop()); return; } // dihentikan saat menunggu izin
+    sMic = mic;
 
     sendMsg('Menghubungkan ke penerima…');
     const peer = sPeer = new Peer(PEER_OPTS);
@@ -521,12 +570,16 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     $('sendLive').hidden = false;
     $('livePin').textContent = pin.slice(0, 3) + ' ' + pin.slice(3);
     $('preview').srcObject = sStream;
+    releaseMic();
     announce();
   }
+
+  function releaseMic() { if (sMic) sMic.getTracks().forEach(t => t.stop()); sMic = null; }
 
   function stopSharing(text, kind) {
     const wasActive = sending || sPeer;
     clearTimeout(sTimeout);
+    releaseMic();
     const peer = sPeer, conn = sConn, call = sCall, stream = sStream;
     sPeer = sConn = sCall = sStream = null;
     sending = false;
@@ -600,12 +653,44 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
   function announce() { // dipanggil di setiap perubahan status; digabung supaya tidak membanjiri broker
     renderDevices();
     clearTimeout(P.annT);
-    P.annT = setTimeout(() => publish({ t: 'hi', id: ME.id, name: ME.name, kind: ME.kind, ...myState() }), 150);
+    P.annT = setTimeout(() => publish({ t: 'hi', id: ME.id, name: ME.name, kind: ME.kind, share: CAN_SHARE, ...myState() }), 150);
   }
+
+  /* Permintaan layar: penerima meminta perangkat lain membagikan layarnya. Browser mewajibkan
+     pengguna di perangkat pengirim yang menekan tombol & memilih layar, jadi tidak bisa dipaksa. */
+  function requestShare(d) {
+    if (!rPin) return;
+    publish({ t: 'req', id: ME.id, to: d.id, name: ME.name, pin: rPin });
+    toast(`Permintaan dikirim ke ${d.name}. Tunggu disetujui di perangkat itu.`);
+  }
+
+  let reqFrom = null, titleT = null;
+  function showRequest(m) {
+    if (!CAN_SHARE || sending || sCall || !/^\d{6}$/.test(m.pin)) return;
+    reqFrom = { id: m.id, pin: m.pin, name: String(m.name || 'Perangkat').slice(0, 40) };
+    $('reqName').textContent = reqFrom.name;
+    $('reqBox').hidden = false;
+    $('reqOk').focus();
+    clearInterval(titleT); // tab di latar belakang: kedipkan judul
+    let on = false;
+    titleT = setInterval(() => { document.title = (on = !on) ? '🔔 Permintaan layar' : 'MirrorSta'; }, 1000);
+  }
+  function closeRequest() {
+    $('reqBox').hidden = true; reqFrom = null;
+    clearInterval(titleT); document.title = 'MirrorSta';
+  }
+  $('reqOk').onclick = () => { const r = reqFrom; closeRequest(); if (r) sendTo(r.pin); };
+  $('reqNo').onclick = () => {
+    const r = reqFrom; closeRequest();
+    if (r) publish({ t: 'deny', id: ME.id, to: r.id, name: ME.name });
+  };
 
   function onPresence(m) {
     if (!m || typeof m.id !== 'string' || m.id === ME.id) return;
-    if (m.t === 'who') announce();
+    if (m.to && m.to !== ME.id) return; // pesan langsung untuk perangkat lain
+    if (m.t === 'req') showRequest(m);
+    else if (m.t === 'deny') toast(`${String(m.name || 'Perangkat').slice(0, 40)} menolak permintaan layar.`);
+    else if (m.t === 'who') announce();
     else if (m.t === 'bye') { P.peers.delete(m.id); renderDevices(); }
     else if (m.t === 'hi') {
       P.peers.set(m.id, {
@@ -614,6 +699,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
         kind: ['pc', 'phone', 'tablet'].includes(m.kind) ? m.kind : 'pc',
         state: ['recv', 'busy', 'send', 'ready', 'idle'].includes(m.state) ? m.state : 'idle',
         pin: /^\d{6}$/.test(m.pin) ? m.pin : null,
+        share: m.share === true,
         seen: Date.now(),
       });
       renderDevices();
@@ -648,11 +734,18 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
       if (d.state === 'busy' || d.state === 'send') sm.className = 'live';
       info.append(b, sm);
       li.append(ic, info);
+      const acts = document.createElement('div'); acts.className = 'dev-acts';
       if (d.state === 'recv' && d.pin && CAN_SHARE && !sending && !sCall) {
         const btn = document.createElement('button'); btn.className = 'primary'; btn.textContent = 'Kirim ke sini';
         btn.onclick = () => sendTo(d.pin);
-        li.append(btn);
+        acts.append(btn);
       }
+      if (mode === 'recv' && rPin && !rConn && d.share && d.state !== 'send' && d.state !== 'busy') {
+        const btn = document.createElement('button'); btn.className = 'ghost'; btn.textContent = 'Minta layar';
+        btn.onclick = () => requestShare(d);
+        acts.append(btn);
+      }
+      if (acts.children.length) li.append(acts);
       ul.append(li);
     }
   }
