@@ -605,7 +605,13 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
      Topik & isi pesan diturunkan dari IP itu (SHA-256 + AES-GCM), jadi hanya perangkat
      di jaringan tersebut yang bisa membaca daftar dan PIN-nya.
      ===================================================== */
-  const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+  // Beberapa broker publik gratis sekaligus: bila satu mati atau portnya diblokir, yang lain tetap jalan.
+  // Pesan dikirim ke semua broker yang tersambung; duplikat dibuang lewat nonce `n`.
+  const BROKERS = [
+    'wss://broker.hivemq.com:8884/mqtt',
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://test.mosquitto.org:8081/mqtt',
+  ];
   const SALT = 'mirrorsta-v1';
   const HEARTBEAT = 10000, EXPIRE = 25000;
   const enc = new TextEncoder(), dec = new TextDecoder();
@@ -627,7 +633,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
   const ME = { id: randHex(8), name: dev.name, kind: dev.kind };
   try { ME.name = localStorage.getItem('mirrorsta-name') || ME.name; } catch (_) {}
 
-  const P = { client: null, topic: null, key: null, peers: new Map(), annT: null };
+  const P = { clients: [], topic: null, key: null, peers: new Map(), annT: null, seenN: new Set() };
 
   function myState() {
     if (mode === 'recv') return rCall || rConn ? { state: 'busy' } : rPin ? { state: 'recv', pin: rPin } : { state: 'idle' };
@@ -646,8 +652,10 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     } catch (_) { return null; }
   }
   async function publish(obj) {
-    const c = P.client;
-    if (c && c.connected) c.publish(P.topic, await seal(obj));
+    const live = P.clients.filter(c => c.connected);
+    if (!live.length) return;
+    const msg = await seal({ ...obj, n: randHex(6) });
+    live.forEach(c => c.publish(P.topic, msg));
   }
 
   function announce() { // dipanggil di setiap perubahan status; digabung supaya tidak membanjiri broker
@@ -687,6 +695,11 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
 
   function onPresence(m) {
     if (!m || typeof m.id !== 'string' || m.id === ME.id) return;
+    if (m.n) { // pesan yang sama bisa tiba dari beberapa broker
+      if (P.seenN.has(m.n)) return;
+      P.seenN.add(m.n);
+      if (P.seenN.size > 500) P.seenN = new Set([...P.seenN].slice(-250));
+    }
     if (m.to && m.to !== ME.id) return; // pesan langsung untuk perangkat lain
     if (m.t === 'req') showRequest(m);
     else if (m.t === 'deny') toast(`${String(m.name || 'Perangkat').slice(0, 40)} menolak permintaan layar.`);
@@ -786,20 +799,29 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     P.topic = 'mirrorsta/v1/' + hex(await digest(SALT + '|room|' + ip)).slice(0, 32);
     P.key = await crypto.subtle.importKey('raw', await digest(SALT + '|key|' + ip), 'AES-GCM', false, ['encrypt', 'decrypt']);
 
-    const c = P.client = mqtt.connect(BROKER, {
-      clientId: 'mirrorsta-' + ME.id + '-' + randHex(3),
-      keepalive: 30, reconnectPeriod: 5000, connectTimeout: 10000,
-      will: { topic: P.topic, payload: await seal({ t: 'bye', id: ME.id }), qos: 0, retain: false },
-    });
-    c.on('connect', () => {
-      c.subscribe(P.topic);
-      publish({ t: 'who', id: ME.id });
-      announce();
-      setDevStatus('Perangkat yang membuka MirrorSta di jaringan internet yang sama (mis. WiFi sekolah).');
-    });
-    c.on('message', async (_t, payload) => onPresence(await unseal(payload.toString())));
-    c.on('offline', () => setDevStatus('Layanan deteksi terputus, mencoba lagi…', 'err'));
-    c.on('error', () => {});
+    const will = { topic: P.topic, payload: await seal({ t: 'bye', id: ME.id }), qos: 0, retain: false };
+    const refresh = () => {
+      if (P.clients.some(c => c.connected)) setDevStatus('Perangkat yang membuka MirrorSta di jaringan internet yang sama (mis. WiFi sekolah).');
+      else setDevStatus('Layanan deteksi terputus, mencoba lagi…', 'err');
+    };
+    for (const url of BROKERS) {
+      const c = mqtt.connect(url, {
+        clientId: 'mirrorsta-' + ME.id + '-' + randHex(3),
+        keepalive: 30, reconnectPeriod: 8000, connectTimeout: 10000, will,
+      });
+      P.clients.push(c);
+      c.on('connect', () => {
+        c.subscribe(P.topic);
+        // hanya ke broker ini: perangkat yang hanya tersambung ke sini pun ikut menjawab
+        seal({ t: 'who', id: ME.id, n: randHex(6) }).then(m => c.publish(P.topic, m));
+        announce();
+        refresh();
+      });
+      c.on('message', async (_t, payload) => onPresence(await unseal(payload.toString())));
+      c.on('offline', refresh);
+      c.on('close', refresh);
+      c.on('error', () => {});
+    }
 
     setInterval(() => {
       const now = Date.now();
@@ -810,8 +832,10 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
 
   window.addEventListener('beforeunload', () => {
     stopSharing(); stopRecv();
-    const c = P.client;
-    if (c && c.connected) seal({ t: 'bye', id: ME.id }).then(m => { c.publish(P.topic, m); c.end(); }).catch(() => {});
+    if (P.key) seal({ t: 'bye', id: ME.id }).then(m => P.clients.forEach(c => {
+      if (c.connected) c.publish(P.topic, m);
+      c.end();
+    })).catch(() => {});
   });
 
   /* ---------- mulai ----------
