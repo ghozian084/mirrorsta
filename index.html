@@ -103,6 +103,13 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
 .stagebar button{padding:9px 16px}
 #stage.idle .stagebar{opacity:0;pointer-events:none}
 #stage.idle{cursor:none}
+#stage.ctl video{touch-action:none}
+#stage.ctl,#stage.ctl.idle{cursor:crosshair}
+.ctlbox{margin-top:18px;font-size:14px;color:var(--muted)}
+.ctlbox label{display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:var(--text)}
+.ctlbox input{width:18px;height:18px;accent-color:var(--accent)}
+.ctlbox .msg{margin-top:8px;font-size:14px}
+.ctlbox a{color:var(--accent-2)}
 
 .modal{position:fixed;inset:0;z-index:15;display:grid;place-items:center;padding:16px;background:#0009;backdrop-filter:blur(4px)}
 .modal-card{width:100%;max-width:440px;background:var(--panel);border:1px solid var(--line);border-radius:20px;
@@ -171,6 +178,10 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
       <video id="preview" autoplay muted playsinline></video>
       <div class="status"><span class="dot ok"></span>Sedang membagikan ke PIN <b id="livePin"></b></div>
       <div class="row"><button id="btnStop" class="danger">■ Berhenti</button></div>
+      <div class="ctlbox">
+        <label><input type="checkbox" id="ctlAllow"> Izinkan penerima mengendalikan mouse (layar sentuh IFP)</label>
+        <p id="ctlMsg" class="msg"></p>
+      </div>
     </div>
   </section>
 
@@ -189,6 +200,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
   <video id="remote" autoplay playsinline muted></video>
   <div class="stagebar">
     <span>MirrorSta · terhubung</span>
+    <span id="ctlBadge" hidden>🖱️ Kendali aktif</span>
     <button id="btnFs" class="ghost">⛶ Layar penuh</button>
     <button id="btnClose" class="danger">Putuskan</button>
   </div>
@@ -312,7 +324,11 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
       }
       rConn = conn;
       conn.on('open', () => { conn.send({ t: 'ok' }); setRecvStatus('Pengirim terhubung, menunggu layar…', 'wait'); });
-      conn.on('data', d => { if (d && d.t === 'stop' && rConn === conn) endSession('Pengirim berhenti berbagi.'); });
+      conn.on('data', d => {
+        if (!d || rConn !== conn) return;
+        if (d.t === 'stop') endSession('Pengirim berhenti berbagi.');
+        else if (d.t === 'ctl') setCtl(!!d.on);
+      });
       conn.on('close', () => { if (rConn === conn) endSession('Koneksi terputus.'); });
       conn.on('error', () => {});
     });
@@ -361,6 +377,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
   }
 
   function hideStage() {
+    setCtl(false);
     $('remote').srcObject = null;
     $('stage').hidden = true;
     if (fsElement()) exitFs();
@@ -393,7 +410,68 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     } catch (_) {}
   }
   $('btnFs').onclick = toggleFs;
-  $('remote').ondblclick = toggleFs;
+  $('remote').ondblclick = () => { if (!ctlOn) toggleFs(); };
+
+  /* kendali jarak jauh (penerima → pengirim): sentuhan/klik di video dikirim sebagai posisi relatif
+     0..1 terhadap gambar layar; halaman pengirim meneruskannya ke program MirrorSta Kendali */
+  let ctlOn = false, ctlDown = null, ctlMove = null, ctlRaf = 0;
+  function setCtl(on) {
+    if (on === ctlOn) return;
+    ctlOn = on; ctlDown = null;
+    $('stage').classList.toggle('ctl', on);
+    $('ctlBadge').hidden = !on;
+    if (!$('stage').hidden) toast(on ? 'Kendali aktif: sentuh layar untuk menggerakkan mouse pengirim.' : 'Kendali dimatikan oleh pengirim.');
+  }
+  function ctlSend(o) { try { rConn && rConn.open && rConn.send({ t: 'in', ...o }); } catch (_) {} }
+  function videoPoint(e, clamp) {
+    const v = $('remote'), r = v.getBoundingClientRect(), vw = v.videoWidth, vh = v.videoHeight;
+    if (!vw || !vh) return null;
+    const k = Math.min(r.width / vw, r.height / vh), w = vw * k, h = vh * k; // object-fit: contain
+    let x = (e.clientX - r.left - (r.width - w) / 2) / w, y = (e.clientY - r.top - (r.height - h) / 2) / h;
+    if (clamp) { x = Math.min(1, Math.max(0, x)); y = Math.min(1, Math.max(0, y)); }
+    else if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+    return { x, y };
+  }
+  function flushMove() {
+    cancelAnimationFrame(ctlRaf); ctlRaf = 0;
+    if (ctlMove) ctlSend({ e: 'm', ...ctlMove });
+    ctlMove = null;
+  }
+  {
+    const v = $('remote');
+    v.addEventListener('pointerdown', e => {
+      if (!ctlOn || ctlDown) return;
+      const p = videoPoint(e); if (!p) return;
+      e.preventDefault();
+      try { v.setPointerCapture(e.pointerId); } catch (_) {}
+      ctlDown = { id: e.pointerId, b: e.button === 2 ? 2 : 0 };
+      ctlMove = null;
+      ctlSend({ e: 'd', ...p, b: ctlDown.b });
+    });
+    v.addEventListener('pointermove', e => {
+      if (!ctlOn) return;
+      if (ctlDown ? e.pointerId !== ctlDown.id : e.pointerType !== 'mouse') return; // sentuhan: hanya saat ditekan
+      const p = videoPoint(e, !!ctlDown); if (!p) return;
+      ctlMove = p; // digabung per frame agar tidak membanjiri koneksi
+      if (!ctlRaf) ctlRaf = requestAnimationFrame(flushMove);
+    });
+    const up = e => {
+      if (!ctlOn || !ctlDown || e.pointerId !== ctlDown.id) return;
+      flushMove();
+      const p = videoPoint(e, true);
+      if (p) ctlSend({ e: 'u', ...p, b: ctlDown.b });
+      ctlDown = null;
+    };
+    v.addEventListener('pointerup', up);
+    v.addEventListener('pointercancel', up);
+    v.addEventListener('contextmenu', e => { if (ctlOn) e.preventDefault(); });
+    v.addEventListener('wheel', e => {
+      if (!ctlOn) return;
+      const p = videoPoint(e); if (!p) return;
+      e.preventDefault();
+      ctlSend({ e: 'w', ...p, dy: e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY });
+    }, { passive: false });
+  }
   const onFsChange = () => {
     $('btnFs').textContent = fsElement() ? '⛶ Keluar layar penuh' : '⛶ Layar penuh';
   };
@@ -512,6 +590,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
         if (!d || peer !== sPeer) return;
         if (d.t === 'busy') stopSharing('Penerima sedang dipakai perangkat lain.', 'err');
         else if (d.t === 'stop') stopSharing('Penerima memutus koneksi.');
+        else if (d.t === 'in') ctlInput(d);
         else if (d.t === 'ok' && !sCall) {
           clearTimeout(sTimeout);
           const call = sCall = peer.call(PREFIX + pin, sStream);
@@ -572,7 +651,66 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     $('preview').srcObject = sStream;
     releaseMic();
     announce();
+    if ($('ctlAllow').checked) ctlStart();
   }
+
+  /* kendali jarak jauh (sisi pengirim): browser tidak boleh menggerakkan mouse, jadi perintah dari
+     penerima diteruskan ke program MirrorSta Kendali yang berjalan di komputer ini (127.0.0.1) */
+  const CTL_URL = 'ws://127.0.0.1:47811';
+  const CTL_FILE = 'kendali/MirrorSta-Kendali.bat';
+  let ctlWs = null, ctlRetry = null;
+  const ctlReady = () => !!(ctlWs && ctlWs.readyState === 1 && ctlWs.ready);
+  function ctlMsg(text, kind = '', withLink = false) {
+    const m = $('ctlMsg'); m.className = 'msg ' + kind; m.textContent = text;
+    if (withLink) {
+      const a = document.createElement('a'); a.href = CTL_FILE; a.download = 'MirrorSta-Kendali.bat';
+      a.textContent = 'Unduh MirrorSta-Kendali.bat';
+      m.append(' ', a, ', klik dua kali file itu (Windows), lalu tunggu sebentar.');
+    }
+  }
+  function sendCtlState() { try { sConn && sConn.open && sConn.send({ t: 'ctl', on: ctlReady() && $('ctlAllow').checked }); } catch (_) {} }
+  function ctlStart() {
+    clearTimeout(ctlRetry);
+    if (!$('ctlAllow').checked || !sStream || ctlWs) return;
+    const surf = (sStream.getVideoTracks()[0].getSettings() || {}).displaySurface;
+    if (surf && surf !== 'monitor') {
+      ctlMsg('Kendali hanya bisa dipakai bila Anda membagikan "Seluruh layar". Hentikan, lalu bagikan ulang dengan memilih layar utama.', 'err');
+      return;
+    }
+    ctlMsg('Menghubungkan ke program MirrorSta Kendali…');
+    let ws;
+    try { ws = new WebSocket(CTL_URL); } catch (_) { ctlRetry = setTimeout(ctlStart, 3000); return; }
+    ctlWs = ws;
+    ws.onmessage = e => {
+      if (ctlWs !== ws || !String(e.data).startsWith('ok MirrorSta-Kendali')) return;
+      ws.ready = true;
+      ctlMsg('Kendali aktif: sentuhan di layar penerima menggerakkan mouse komputer ini.', 'ok');
+      sendCtlState();
+    };
+    ws.onclose = () => {
+      if (ctlWs !== ws) return;
+      ctlWs = null;
+      sendCtlState();
+      if (!$('ctlAllow').checked || !sStream) return;
+      ctlMsg(ws.ready ? 'Program MirrorSta Kendali tertutup.' : 'Program MirrorSta Kendali belum berjalan di komputer ini.', 'err', true);
+      ctlRetry = setTimeout(ctlStart, 3000);
+    };
+  }
+  function ctlStop() {
+    clearTimeout(ctlRetry);
+    const ws = ctlWs; ctlWs = null;
+    try { ws && ws.close(); } catch (_) {}
+    sendCtlState();
+    ctlMsg('');
+  }
+  function ctlInput(d) {
+    if (!ctlReady() || !$('ctlAllow').checked) return;
+    const x = +d.x, y = +d.y;
+    if (!['m', 'd', 'u', 'w'].includes(d.e) || !(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return;
+    const arg = d.e === 'w' ? Math.round(+d.dy || 0) : d.b === 2 ? 2 : 0;
+    ctlWs.send(`${d.e} ${x.toFixed(5)} ${y.toFixed(5)} ${arg}`);
+  }
+  $('ctlAllow').onchange = () => { if ($('ctlAllow').checked) ctlStart(); else ctlStop(); };
 
   function releaseMic() { if (sMic) sMic.getTracks().forEach(t => t.stop()); sMic = null; }
 
@@ -580,6 +718,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     const wasActive = sending || sPeer;
     clearTimeout(sTimeout);
     releaseMic();
+    ctlStop();
     const peer = sPeer, conn = sConn, call = sCall, stream = sStream;
     sPeer = sConn = sCall = sStream = null;
     sending = false;
