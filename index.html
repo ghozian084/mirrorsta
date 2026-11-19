@@ -682,7 +682,9 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
     try { ws = new WebSocket(CTL_URL); } catch (_) { ctlRetry = setTimeout(ctlStart, 3000); return; }
     ctlWs = ws;
     ws.onmessage = e => {
-      if (ctlWs !== ws || !String(e.data).startsWith('ok MirrorSta-Kendali')) return;
+      if (ctlWs !== ws) return;
+      if (e.data === 'denied') { ws.denied = true; return; }
+      if (!String(e.data).startsWith('ok MirrorSta-Kendali')) return;
       ws.ready = true;
       ctlMsg('Kendali aktif: sentuhan di layar penerima menggerakkan mouse komputer ini.', 'ok');
       sendCtlState();
@@ -692,6 +694,11 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:14px 16px 22p
       ctlWs = null;
       sendCtlState();
       if (!$('ctlAllow').checked || !sStream) return;
+      if (ws.denied) {
+        ctlMsg(`Program MirrorSta Kendali Anda versi lama dan menolak alamat ${location.host}. Tutup jendela programnya, lalu`, 'err', true);
+        ctlRetry = setTimeout(ctlStart, 5000);
+        return;
+      }
       ctlMsg(ws.ready ? 'Program MirrorSta Kendali tertutup.' : 'Program MirrorSta Kendali belum berjalan di komputer ini.', 'err', true);
       ctlRetry = setTimeout(ctlStart, 3000);
     };
