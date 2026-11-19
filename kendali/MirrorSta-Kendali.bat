@@ -20,7 +20,7 @@ exit /b
 # =====================================================================
 
 $Port = 47811
-$AllowedOrigins = @('https://ghozian084.github.io')
+$AllowedOrigins = @('https://mirrorsta.alhazed.my.id', 'https://ghozian084.github.io')
 
 Add-Type @"
 using System;
@@ -88,17 +88,22 @@ function Serve-Client($client) {
         if ($i -gt 0) { $headers[$line.Substring(0, $i).Trim().ToLower()] = $line.Substring($i + 1).Trim() }
     }
     $origin = $headers['origin']
-    if (-not $headers['sec-websocket-key'] -or ($AllowedOrigins -notcontains $origin)) {
+    if (-not $headers['sec-websocket-key']) {
         $deny = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 403 Forbidden`r`nContent-Length: 0`r`n`r`n")
         $stream.Write($deny, 0, $deny.Length)
-        Write-Host "Koneksi ditolak dari: $origin"
         return
     }
     $sha = [Security.Cryptography.SHA1]::Create()
     $accept = [Convert]::ToBase64String($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')))
     $resp = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 101 Switching Protocols`r`nUpgrade: websocket`r`nConnection: Upgrade`r`nSec-WebSocket-Accept: $accept`r`n`r`n")
     $stream.Write($resp, 0, $resp.Length)
-    Send-Text $stream 'ok MirrorSta-Kendali 1'
+    if ($AllowedOrigins -notcontains $origin) {
+        # beri tahu halaman alasannya, lalu tutup; tidak ada perintah mouse yang diterima
+        Send-Text $stream 'denied'
+        Write-Host "Koneksi ditolak dari: $origin"
+        return
+    }
+    Send-Text $stream 'ok MirrorSta-Kendali 2'
     Write-Host 'Halaman MirrorSta tersambung. Kendali siap.'
 
     # --- baca frame WebSocket ---
